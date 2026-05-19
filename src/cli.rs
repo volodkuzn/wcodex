@@ -77,6 +77,8 @@ pub enum CommandKind {
     Shell,
     /// Run diagnostics.
     Doctor(DoctorArgs),
+    /// Recreate current branch commits as signed host Git commits.
+    Resign(ResignArgs),
     /// Build the runtime image.
     BuildImage(BuildImageArgs),
     /// Remove this repository's persistent cache.
@@ -114,6 +116,13 @@ pub struct BuildImageArgs {
     pub pull: bool,
 }
 
+#[derive(Debug, Clone, Args)]
+pub struct ResignArgs {
+    /// Squash all current-branch commits into one signed commit.
+    #[arg(long)]
+    pub squash: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Run(Vec<String>),
@@ -121,6 +130,7 @@ pub enum Action {
     Login(Vec<String>),
     Shell,
     Doctor { codex_auth_probe: bool },
+    Resign { squash: bool },
     BuildImage { no_cache: bool, pull: bool },
     CleanCache,
     CleanAuth,
@@ -138,6 +148,9 @@ impl Cli {
             Some(CommandKind::Shell) => Action::Shell,
             Some(CommandKind::Doctor(args)) => Action::Doctor {
                 codex_auth_probe: args.codex_auth_probe,
+            },
+            Some(CommandKind::Resign(args)) => Action::Resign {
+                squash: args.squash,
             },
             Some(CommandKind::BuildImage(args)) => Action::BuildImage {
                 no_cache: args.no_cache,
@@ -216,5 +229,12 @@ mod tests {
         assert_eq!(cli.options.cpus, "8");
         assert_eq!(cli.options.memory, "16g");
         assert_eq!(cli.action(), Action::Shell);
+    }
+
+    #[test]
+    fn parses_resign_squash() {
+        let cli = Cli::try_parse_from(["wcodex", "resign", "--squash"]).unwrap();
+
+        assert_eq!(cli.action(), Action::Resign { squash: true });
     }
 }

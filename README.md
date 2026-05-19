@@ -131,6 +131,28 @@ Run diagnostics:
 wcodex doctor
 ```
 
+## Signing Commits
+
+The container Git config explicitly disables automatic commit signing because
+the runtime does not mount host signing keys by default.
+
+After Codex creates commits in the container, recreate the current branch's
+commits as signed host commits:
+
+```bash
+wcodex resign
+```
+
+`wcodex resign` runs Git on the macOS checkout, requires a clean worktree and a
+configured upstream, creates a backup ref under `refs/wcodex/resign/`, then
+replays the commits ahead of upstream with `git commit -S`.
+
+To squash all commits ahead of upstream into one signed commit:
+
+```bash
+wcodex resign --squash
+```
+
 ## State
 
 `wcodex` stores persistent state under:

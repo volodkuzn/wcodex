@@ -5,5 +5,6 @@ pub mod engine_container;
 pub mod image;
 pub mod paths;
 pub mod probe;
+pub mod resign;
 pub mod run;
 pub mod state;

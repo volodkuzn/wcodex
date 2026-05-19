@@ -105,6 +105,7 @@ wcodex exec <prompt...>
 wcodex login [codex login args...]
 wcodex shell
 wcodex doctor
+wcodex resign [--squash]
 wcodex build-image [--no-cache] [--pull]
 wcodex clean-cache
 wcodex clean-auth
@@ -559,6 +560,7 @@ writable_roots = [
   "." = "write",
   "**/.env" = "none",
   "**/*.env" = "none",
+  "**/.npmrc" = "none",
   "**/.pypirc" = "none",
   "**/.netrc" = "none",
   "**/id_rsa" = "none",
@@ -831,6 +833,9 @@ Generate `/cache/gitconfig`:
 [user]
     name = <host git user.name or Wrapped Codex>
     email = <host git user.email or wrapped-codex@example.invalid>
+
+[commit]
+    gpgsign = false
 ```
 
 Pass:
@@ -841,6 +846,20 @@ Pass:
 ```
 
 Private Git dependencies should fail by default unless the user explicitly opts into SSH forwarding or a secret mechanism.
+
+## 14.1 Resigning branch commits on the host
+
+`wcodex resign` is a host-side Git command, not a container command. It should:
+
+- require a clean worktree;
+- require the current branch to have an upstream;
+- find the branch base with `git merge-base HEAD @{upstream}`;
+- create a backup ref under `refs/wcodex/resign/`;
+- recreate each linear commit ahead of upstream with `git commit -S -C <old-commit>`;
+- fail clearly on merge commits unless `--squash` is used.
+
+`wcodex resign --squash` should soft-reset to the branch base and create one
+signed commit from the current branch diff with `git commit -S`.
 
 ## 15. Host environment policy
 

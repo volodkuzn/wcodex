@@ -11,6 +11,7 @@ use crate::engine_container::{
 use crate::image::{self, ImageBuildOptions};
 use crate::paths;
 use crate::probe;
+use crate::resign::{self, ResignOptions};
 use crate::state::StatePaths;
 
 pub fn main_entry() -> Result<()> {
@@ -96,6 +97,9 @@ pub fn execute(cli: Cli) -> Result<()> {
                 initial_image_exists,
                 codex_auth_probe,
             })
+        }
+        Action::Resign { squash } => {
+            resign::resign_current_branch(&state.repo_root, ResignOptions { squash })
         }
         Action::Shell => {
             let prepared = prepare_runtime(&cli, &state)?;

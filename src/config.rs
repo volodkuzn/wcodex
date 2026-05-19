@@ -33,6 +33,7 @@ glob_scan_max_depth = 4
 "." = "write"
 "**/.env" = "none"
 "**/*.env" = "none"
+"**/.npmrc" = "none"
 "**/.pypirc" = "none"
 "**/.netrc" = "none"
 "**/id_rsa" = "none"
@@ -139,13 +140,17 @@ pub fn write_gitconfig(path: &Utf8Path, repo_root: &Utf8Path) -> Result<()> {
     let name = read_git_config(repo_root, "user.name").unwrap_or_else(|| "Wrapped Codex".into());
     let email = read_git_config(repo_root, "user.email")
         .unwrap_or_else(|| "wrapped-codex@example.invalid".into());
-    let contents = format!(
-        "[safe]\n    directory = /workspace\n\n[user]\n    name = {}\n    email = {}\n",
-        sanitize_gitconfig_value(&name),
-        sanitize_gitconfig_value(&email)
-    );
+    let contents = gitconfig_contents(&name, &email);
     fs_err::write(path, contents).with_context(|| format!("failed to write {path}"))?;
     Ok(())
+}
+
+fn gitconfig_contents(name: &str, email: &str) -> String {
+    format!(
+        "[safe]\n    directory = /workspace\n\n[user]\n    name = {}\n    email = {}\n\n[commit]\n    gpgsign = false\n",
+        sanitize_gitconfig_value(name),
+        sanitize_gitconfig_value(email)
+    )
 }
 
 fn read_git_config(repo_root: &Utf8Path, key: &str) -> Option<String> {
@@ -221,5 +226,19 @@ mod tests {
         assert!(!domains.contains_key("**.npmjs.org"));
         assert!(!domains.contains_key("**.npmjs.com"));
         assert!(!domains.contains_key("**.nodejs.org"));
+    }
+
+    #[test]
+    fn generated_gitconfig_disables_commit_signing_in_container() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let gitconfig_path = Utf8PathBuf::from_path_buf(tempdir.path().join("gitconfig")).unwrap();
+        write_gitconfig(
+            &gitconfig_path,
+            Utf8Path::new(tempdir.path().to_str().unwrap()),
+        )
+        .unwrap();
+        let contents = fs_err::read_to_string(&gitconfig_path).unwrap();
+
+        assert!(contents.contains("[commit]\n    gpgsign = false\n"));
     }
 }
