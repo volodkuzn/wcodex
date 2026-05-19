@@ -248,7 +248,7 @@ Then run:
 ```bash
 container build \
   --pull \
-  --tag wcodex-runtime:<image-hash> \
+  --tag wcodex-runtime:latest \
   --file <tempdir>/Containerfile \
   <tempdir>
 ```
@@ -259,8 +259,7 @@ The wrapper should generate this Dockerfile syntax as `Containerfile`.
 
 It includes:
 
-- Node.js 22 for `@openai/codex`;
-- Codex CLI installed globally;
+- Codex CLI installed directly from the `openai/codex` GitHub release binary;
 - system `bubblewrap`;
 - Rust via rustup;
 - `uv` and `uvx`;
@@ -271,11 +270,9 @@ It includes:
 ```Dockerfile
 # syntax=docker/dockerfile:1.7
 
-FROM docker.io/library/node:22-bookworm-slim
+FROM docker.io/library/debian:bookworm-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG CODEX_VERSION=latest
-ARG RUST_TOOLCHAIN=stable
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -331,12 +328,31 @@ RUN apt-get update \
  && chmod 4755 /usr/bin/bwrap \
  && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
  && git lfs install --system \
- && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-      | sh -s -- -y --no-modify-path --profile default --default-toolchain "${RUST_TOOLCHAIN}" \
- && /root/.cargo/bin/rustup component add rustfmt clippy \
- && npm install -g "@openai/codex@${CODEX_VERSION}" \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/* /tmp/*
+
+ARG RUST_TOOLCHAIN=stable
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --no-modify-path --profile default --default-toolchain "${RUST_TOOLCHAIN}" \
+ && /root/.cargo/bin/rustup component add rustfmt clippy
+
+ARG CODEX_VERSION=latest
+RUN case "$(uname -m)" in \
+      x86_64) codex_asset="codex-x86_64-unknown-linux-musl" ;; \
+      aarch64|arm64) codex_asset="codex-aarch64-unknown-linux-musl" ;; \
+      *) echo "unsupported Codex binary architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac \
+ && if [[ "${CODEX_VERSION}" == "latest" ]]; then \
+      codex_url="https://github.com/openai/codex/releases/latest/download/${codex_asset}.tar.gz"; \
+    else \
+      case "${CODEX_VERSION}" in rust-v*) codex_tag="${CODEX_VERSION}" ;; *) codex_tag="rust-v${CODEX_VERSION}" ;; esac; \
+      codex_url="https://github.com/openai/codex/releases/download/${codex_tag}/${codex_asset}.tar.gz"; \
+    fi \
+ && curl --proto '=https' --tlsv1.2 -fsSL "${codex_url}" -o /tmp/codex.tar.gz \
+ && tar -xzf /tmp/codex.tar.gz -C /tmp \
+ && install -m 0755 "/tmp/${codex_asset}" /usr/local/bin/codex \
+ && rm -f /tmp/codex.tar.gz "/tmp/${codex_asset}" \
+ && codex --version
 
 COPY entrypoint.sh /usr/local/bin/wcodex-entrypoint
 RUN chmod 0755 /usr/local/bin/wcodex-entrypoint
@@ -365,7 +381,6 @@ ENV CARGO_HOME=/cache/cargo
 ENV CARGO_INSTALL_ROOT=/cache/cargo
 
 # Other common caches.
-ENV npm_config_cache=/cache/npm
 ENV GOMODCACHE=/cache/go/pkg/mod
 ENV GOCACHE=/cache/go/build
 ENV CCACHE_DIR=/cache/ccache
@@ -394,7 +409,6 @@ mkdir -p \
   /cache/uv/python-bin \
   /cache/pip \
   /cache/cargo \
-  /cache/npm \
   /cache/go/pkg/mod \
   /cache/go/build \
   /cache/ccache \
@@ -434,12 +448,17 @@ container build \
   --memory 8g \
   --build-arg CODEX_VERSION=latest \
   --build-arg RUST_TOOLCHAIN=stable \
-  --tag wcodex-runtime:<image-hash> \
+  --tag wcodex-runtime:latest \
   --file <context>/Containerfile \
   <context>
 ```
 
-The `image-hash` should include:
+Use `wcodex-runtime:latest` as the default generated image tag. Keep an
+implementation fingerprint in `~/.wcodex/images/<image-hash>/metadata.json` so
+the wrapper can rebuild when the generated Containerfile or entrypoint changes
+without making the user-facing image tag hash-based.
+
+The `image-hash` fingerprint should include:
 
 ```text
 Containerfile contents
@@ -487,14 +506,13 @@ container run \
   --env CARGO_HOME=/cache/cargo \
   --env CARGO_INSTALL_ROOT=/cache/cargo \
   --env RUSTUP_HOME=/root/.rustup \
-  --env npm_config_cache=/cache/npm \
   --env GOMODCACHE=/cache/go/pkg/mod \
   --env GOCACHE=/cache/go/build \
   --env CCACHE_DIR=/cache/ccache \
   --env GIT_CONFIG_GLOBAL=/cache/gitconfig \
   --env GIT_TERMINAL_PROMPT=0 \
   --env PATH=/cache/cargo/bin:/cache/uv/bin:/cache/uv/python-bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-  wcodex-runtime:<image-hash> \
+  wcodex-runtime:latest \
   <codex args...>
 ```
 
@@ -541,7 +559,6 @@ writable_roots = [
   "." = "write",
   "**/.env" = "none",
   "**/*.env" = "none",
-  "**/.npmrc" = "none",
   "**/.pypirc" = "none",
   "**/.netrc" = "none",
   "**/id_rsa" = "none",
@@ -585,11 +602,6 @@ allow_local_binding = true
 "**.rust-lang.org" = "allow"
 "**.rustup.rs" = "allow"
 "rust-lang.github.io" = "allow"
-
-# Node / npm.
-"**.npmjs.org" = "allow"
-"**.npmjs.com" = "allow"
-"**.nodejs.org" = "allow"
 
 # Go.
 "**.golang.org" = "allow"
@@ -643,7 +655,6 @@ include_only = [
   "CARGO_INSTALL_ROOT",
   "CARGO_TARGET_DIR",
 
-  "npm_config_cache",
   "GOMODCACHE",
   "GOCACHE",
   "CCACHE_DIR",
@@ -662,7 +673,6 @@ The generated config should enable `features.network_proxy` and use the named pe
 - GitHub, GitLab, and Bitbucket source dependencies;
 - Python / uv / pip package resolution and uv-managed Python downloads;
 - Rust / Cargo / rustup;
-- Node / npm;
 - Go modules and checksum database;
 - Debian package mirrors for occasional ephemeral package installs;
 - common JVM, Ruby, PHP, and OCI registry endpoints used by mixed-language repositories.
@@ -712,7 +722,6 @@ Required write paths:
 | Cargo build artifacts | default repo `target/` | `/workspace/target` | project root write |
 | Cargo build artifacts, optional | `CARGO_TARGET_DIR=/cache/cargo-target` | `/cache/cargo-target` | `/cache = write` |
 | pip | `PIP_CACHE_DIR=/cache/pip` | `/cache/pip` | `/cache = write` |
-| npm | `npm_config_cache=/cache/npm` | `/cache/npm` | `/cache = write` |
 | Go modules | `GOMODCACHE=/cache/go/pkg/mod` | `/cache/go/pkg/mod` | `/cache = write` |
 | Go build | `GOCACHE=/cache/go/build` | `/cache/go/build` | `/cache = write` |
 | ccache | `CCACHE_DIR=/cache/ccache` | `/cache/ccache` | `/cache = write` |
@@ -926,7 +935,6 @@ uv cache dir
 cargo --version
 rustc --version
 python3 --version
-node --version
 codex --version
 codex sandbox linux -- /bin/sh -lc 'echo sandbox-ok'
 ```
@@ -988,7 +996,7 @@ Run a clear cache write probe:
 touch /cache/.wcodex-write-test && rm /cache/.wcodex-write-test
 ```
 
-If it fails, explain that `/cache` is required for `uv`, `cargo`, npm, pip, Go, and ccache.
+If it fails, explain that `/cache` is required for `uv`, `cargo`, pip, Go, and ccache.
 
 ### Workspace permission failure
 
