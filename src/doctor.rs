@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
 
 use crate::cli::SandboxMode;
-use crate::engine_container::{container_run_args, ContainerEngine, RunContext, StdioMode};
+use crate::engine_container::{
+    container_run_args, shell_command_args, ContainerEngine, RunContext, StdioMode,
+};
 use crate::probe;
 use crate::state::StatePaths;
 
@@ -95,14 +97,15 @@ pub fn run(input: DoctorInput<'_>) -> Result<()> {
         input.engine,
         input.context,
         "codex sandbox linux",
-        "codex sandbox linux -- /bin/sh -lc 'echo sandbox-ok'",
+        "codex sandbox linux -- /bin/sh -c 'echo sandbox-ok'",
     )?;
 
     println!(
         "cache write test result: {}",
-        if run_shell_check(
+        if run_shell_labeled(
             input.engine,
             input.context,
+            "cache write file",
             "p=/cache/.wcodex-write-test-$$; touch \"$p\" && rm \"$p\"",
         )? {
             "ok"
@@ -112,9 +115,10 @@ pub fn run(input: DoctorInput<'_>) -> Result<()> {
     );
     println!(
         "repo write test result: {}",
-        if run_shell_check(
+        if run_shell_labeled(
             input.engine,
             input.context,
+            "workspace write file",
             "p=/workspace/.wcodex-write-test-$$; touch \"$p\" && rm \"$p\"",
         )? {
             "ok"
@@ -124,9 +128,10 @@ pub fn run(input: DoctorInput<'_>) -> Result<()> {
     );
     println!(
         "network test result: {}",
-        if run_shell_check(
+        if run_shell_labeled(
             input.engine,
             input.context,
+            "network curl",
             "curl -fsS https://www.python.org >/dev/null",
         )? {
             "ok"
@@ -176,24 +181,26 @@ fn run_check(
     label: &str,
     command: &[&str],
 ) -> Result<bool> {
-    let runtime_args = command
-        .iter()
-        .map(|arg| (*arg).to_owned())
-        .collect::<Vec<_>>();
+    let runtime_args: Vec<String> = command.iter().map(|arg| (*arg).to_owned()).collect();
+    run_runtime_args(engine, context, label, &runtime_args)
+}
+
+fn run_runtime_args(
+    engine: &ContainerEngine,
+    context: &RunContext,
+    label: &str,
+    runtime_args: &[String],
+) -> Result<bool> {
     let args = container_run_args(
         context,
         StdioMode::Batch,
         &doctor_suffix(label),
-        &runtime_args,
+        runtime_args,
     );
     let status = engine.status(args)?;
     let ok = status.success();
     println!("{label}: {}", if ok { "ok" } else { "failed" });
     Ok(ok)
-}
-
-fn run_shell_check(engine: &ContainerEngine, context: &RunContext, command: &str) -> Result<bool> {
-    run_check(engine, context, command, &["/bin/sh", "-lc", command])
 }
 
 fn run_shell_labeled(
@@ -202,15 +209,28 @@ fn run_shell_labeled(
     label: &str,
     command: &str,
 ) -> Result<bool> {
-    run_check(engine, context, label, &["/bin/sh", "-lc", command])
+    run_runtime_args(engine, context, label, &shell_command_args(command))
 }
 
 fn doctor_suffix(label: &str) -> String {
-    format!(
-        "doctor-{}",
-        label
+    let safe_label = label
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .take(48)
+        .collect::<String>();
+    format!("doctor-{safe_label}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn doctor_suffix_is_short_and_name_safe() {
+        let suffix = doctor_suffix("p=/workspace/.wcodex-write-test-$$; touch \"$p\" && rm \"$p\"");
+        assert!(suffix.len() <= "doctor-".len() + 48);
+        assert!(suffix
             .chars()
-            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-            .collect::<String>()
-    )
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-'));
+    }
 }

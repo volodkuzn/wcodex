@@ -8,6 +8,8 @@ use crate::paths;
 
 const HOST_ENV_ALLOWLIST: &[&str] = &["PATH", "HOME", "TERM", "COLORTERM", "LANG", "LC_ALL"];
 
+pub const RUNTIME_PATH: &str = "/cache/cargo/bin:/cache/uv/bin:/cache/uv/python-bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
 const RUNTIME_ENV: &[(&str, &str)] = &[
     ("HOME", "/root"),
     ("CODEX_HOME", "/root/.codex"),
@@ -30,10 +32,7 @@ const RUNTIME_ENV: &[(&str, &str)] = &[
     ("CCACHE_DIR", "/cache/ccache"),
     ("GIT_CONFIG_GLOBAL", "/cache/gitconfig"),
     ("GIT_TERMINAL_PROMPT", "0"),
-    (
-        "PATH",
-        "/cache/cargo/bin:/cache/uv/bin:/cache/uv/python-bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-    ),
+    ("PATH", RUNTIME_PATH),
 ];
 
 const INNER_SANDBOX_CAPS: &[&str] = &["SYS_ADMIN", "SYS_CHROOT", "SETUID", "SETGID", "SYS_PTRACE"];
@@ -128,6 +127,10 @@ pub fn container_run_args(
     args.push(context.image_tag.clone().into());
     args.extend(runtime_args.iter().cloned().map(OsString::from));
     args
+}
+
+pub fn shell_command_args(command: &str) -> Vec<String> {
+    vec!["/bin/sh".into(), "-c".into(), command.into()]
 }
 
 pub fn base_run_args(
@@ -312,6 +315,13 @@ mod tests {
     }
 
     #[test]
+    fn requests_container_init_for_process_reaping() {
+        let args = base_run_args(&fake_context(), StdioMode::Batch, "1");
+
+        assert!(os_args_to_strings(&args).contains(&"--init".into()));
+    }
+
+    #[test]
     fn does_not_mount_host_home_or_secret_dirs() {
         let args = base_run_args(&fake_context(), StdioMode::Batch, "1");
         let sources = mount_sources(&args);
@@ -337,6 +347,7 @@ mod tests {
         let args = base_run_args(&fake_context(), StdioMode::Batch, "1");
         let env = env_values(&args);
 
+        assert!(env.contains(&format!("PATH={RUNTIME_PATH}")));
         assert!(env.contains(&"UV_CACHE_DIR=/cache/uv/cache".into()));
         assert!(env.contains(&"UV_TOOL_DIR=/cache/uv/tools".into()));
         assert!(env.contains(&"UV_PYTHON_INSTALL_DIR=/cache/uv/python".into()));
@@ -364,6 +375,18 @@ mod tests {
                 "--model".to_string(),
                 "gpt-5".to_string(),
                 "fix tests".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn shell_command_args_use_non_login_shell() {
+        assert_eq!(
+            shell_command_args("echo ok"),
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "echo ok".to_string()
             ]
         );
     }

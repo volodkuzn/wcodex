@@ -6,7 +6,8 @@ use crate::cli::{Action, Cli};
 use crate::config;
 use crate::doctor::{self, DoctorInput};
 use crate::engine_container::{
-    container_run_args, default_name_suffix, format_argv, ContainerEngine, RunContext, StdioMode,
+    container_run_args, default_name_suffix, format_argv, shell_command_args, ContainerEngine,
+    RunContext, StdioMode,
 };
 use crate::image::{self, ImageBuildOptions};
 use crate::paths;
@@ -255,11 +256,8 @@ fn exec_container(engine: ContainerEngine, context: RunContext, runtime_args: Ve
 }
 
 fn run_write_preflight(engine: &ContainerEngine, context: &RunContext) -> Result<()> {
-    let cache_args = vec![
-        "/bin/sh".into(),
-        "-lc".into(),
-        "p=/cache/.wcodex-write-test-$$; touch \"$p\" && rm \"$p\"".into(),
-    ];
+    let cache_args =
+        shell_command_args("p=/cache/.wcodex-write-test-$$; touch \"$p\" && rm \"$p\"");
     let status = engine.status(container_run_args(
         context,
         StdioMode::Batch,
@@ -272,11 +270,8 @@ fn run_write_preflight(engine: &ContainerEngine, context: &RunContext) -> Result
         );
     }
 
-    let workspace_args = vec![
-        "/bin/sh".into(),
-        "-lc".into(),
-        "p=/workspace/.wcodex-write-test-$$; touch \"$p\" && rm \"$p\"".into(),
-    ];
+    let workspace_args =
+        shell_command_args("p=/workspace/.wcodex-write-test-$$; touch \"$p\" && rm \"$p\"");
     let status = engine.status(container_run_args(
         context,
         StdioMode::Batch,

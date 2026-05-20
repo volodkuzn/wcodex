@@ -61,7 +61,6 @@ pub struct GlobalOptions {
 pub enum SandboxMode {
     Auto,
     Bwrap,
-    Landlock,
     Yolo,
 }
 

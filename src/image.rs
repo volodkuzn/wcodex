@@ -61,7 +61,6 @@ RUN apt-get update \
     rsync \
     strace \
     sudo \
-    tini \
     tree \
     unzip \
     xz-utils \
@@ -92,6 +91,7 @@ RUN case "$(uname -m)" in \
  && curl --proto '=https' --tlsv1.2 -fsSL "${codex_url}" -o /tmp/codex.tar.gz \
  && tar -xzf /tmp/codex.tar.gz -C /tmp \
  && install -m 0755 "/tmp/${codex_asset}" /usr/local/bin/codex \
+ && ln -sf /usr/local/bin/codex /usr/local/bin/codex-linux-sandbox \
  && rm -f /tmp/codex.tar.gz "/tmp/${codex_asset}" \
  && codex --version
 
@@ -121,12 +121,14 @@ ENV PATH=/cache/cargo/bin:/cache/uv/bin:/cache/uv/python-bin:/root/.cargo/bin:/u
 
 WORKDIR /workspace
 
-ENTRYPOINT ["tini", "--", "/usr/local/bin/wcodex-entrypoint"]
+ENTRYPOINT ["/usr/local/bin/wcodex-entrypoint"]
 CMD []
 "#;
 
 pub const ENTRYPOINT_SH: &str = r#"#!/usr/bin/env bash
 set -euo pipefail
+
+export PATH=/cache/cargo/bin:/cache/uv/bin:/cache/uv/python-bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 mkdir -p \
   /root/.codex \
@@ -145,17 +147,17 @@ mkdir -p \
 
 case "${1:-}" in
   "")
-    exec codex
+    exec /usr/local/bin/codex
     ;;
   bash|sh|zsh|/bin/bash|/bin/sh|/bin/zsh)
     exec "$@"
     ;;
   codex)
     shift
-    exec codex "$@"
+    exec /usr/local/bin/codex "$@"
     ;;
   *)
-    exec codex "$@"
+    exec /usr/local/bin/codex "$@"
     ;;
 esac
 "#;
@@ -316,6 +318,20 @@ mod tests {
     fn generated_image_contains_required_tools_and_cache_env() {
         assert!(CONTAINERFILE.contains("FROM docker.io/library/debian:bookworm-slim"));
         assert!(CONTAINERFILE.contains("bubblewrap"));
+        assert!(CONTAINERFILE
+            .contains("ln -sf /usr/local/bin/codex /usr/local/bin/codex-linux-sandbox"));
+        assert!(!CONTAINERFILE.contains("codex-resources/bwrap"));
+        assert!(CONTAINERFILE.contains("COPY entrypoint.sh /usr/local/bin/wcodex-entrypoint"));
+        assert!(CONTAINERFILE.contains("ENTRYPOINT [\"/usr/local/bin/wcodex-entrypoint\"]"));
+        assert!(CONTAINERFILE.contains(&format!(
+            "ENV PATH={}",
+            crate::engine_container::RUNTIME_PATH
+        )));
+        assert!(ENTRYPOINT_SH.contains(&format!(
+            "export PATH={}",
+            crate::engine_container::RUNTIME_PATH
+        )));
+        assert!(ENTRYPOINT_SH.contains("exec /usr/local/bin/codex \"$@\""));
         assert!(CONTAINERFILE.contains("ARG RUST_TOOLCHAIN=stable\nRUN curl"));
         assert!(CONTAINERFILE.contains("ARG CODEX_VERSION=latest\nRUN case"));
         assert!(CONTAINERFILE.contains(

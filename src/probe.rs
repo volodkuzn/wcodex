@@ -1,12 +1,13 @@
 use anyhow::{bail, Result};
 
 use crate::cli::SandboxMode;
-use crate::engine_container::{container_run_args, ContainerEngine, RunContext, StdioMode};
+use crate::engine_container::{
+    container_run_args, shell_command_args, ContainerEngine, RunContext, StdioMode,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxSelection {
     Bwrap,
-    Landlock,
     Yolo,
 }
 
@@ -14,7 +15,6 @@ impl SandboxSelection {
     pub fn label(self) -> &'static str {
         match self {
             Self::Bwrap => "bwrap",
-            Self::Landlock => "landlock",
             Self::Yolo => "danger-full-access",
         }
     }
@@ -31,33 +31,22 @@ pub fn select_sandbox(
     } else {
         false
     };
-    let landlock_ok = if matches!(mode, SandboxMode::Auto | SandboxMode::Landlock) && !bwrap_ok {
-        run_landlock_probe(engine, context)?
-    } else {
-        false
-    };
 
-    select_from_probe_results(mode, bwrap_ok, landlock_ok, allow_yolo_fallback)
+    select_from_probe_results(mode, bwrap_ok, allow_yolo_fallback)
 }
 
 pub fn select_from_probe_results(
     mode: SandboxMode,
     bwrap_ok: bool,
-    landlock_ok: bool,
     allow_yolo_fallback: bool,
 ) -> Result<SandboxSelection> {
     match mode {
         SandboxMode::Bwrap if bwrap_ok => Ok(SandboxSelection::Bwrap),
         SandboxMode::Bwrap => bail!("requested bubblewrap sandbox mode, but the probe failed"),
-        SandboxMode::Landlock if landlock_ok => Ok(SandboxSelection::Landlock),
-        SandboxMode::Landlock => bail!("requested Landlock sandbox mode, but the probe failed"),
         SandboxMode::Yolo => Ok(SandboxSelection::Yolo),
         SandboxMode::Auto => {
             if bwrap_ok {
                 return Ok(SandboxSelection::Bwrap);
-            }
-            if landlock_ok {
-                return Ok(SandboxSelection::Landlock);
             }
             if allow_yolo_fallback {
                 return Ok(SandboxSelection::Yolo);
@@ -66,8 +55,7 @@ pub fn select_from_probe_results(
             bail!(
                 "Codex inner sandbox failed inside the container.\n\
                  Tried:\n\
-                   1. bubblewrap-backed Linux sandbox\n\
-                   2. legacy Landlock fallback\n\n\
+                   1. bubblewrap-backed Linux sandbox\n\n\
                  Refusing danger-full-access without --allow-yolo-fallback.\n\n\
                  Run:\n\
                    wcodex --allow-yolo-fallback ..."
@@ -77,46 +65,14 @@ pub fn select_from_probe_results(
 }
 
 pub fn bwrap_probe_args(context: &RunContext) -> Vec<std::ffi::OsString> {
-    let runtime_args = vec![
-        "sandbox".into(),
-        "linux".into(),
-        "--".into(),
-        "/bin/sh".into(),
-        "-lc".into(),
-        "echo bwrap-ok".into(),
-    ];
+    let mut runtime_args = vec!["sandbox".into(), "linux".into(), "--".into()];
+    runtime_args.extend(shell_command_args("echo bwrap-ok"));
     container_run_args(context, StdioMode::Batch, "probe-bwrap", &runtime_args)
-}
-
-pub fn landlock_probe_args(context: &RunContext) -> Vec<std::ffi::OsString> {
-    let runtime_args = vec![
-        "-c".into(),
-        "use_legacy_landlock=true".into(),
-        "sandbox".into(),
-        "linux".into(),
-        "--".into(),
-        "/bin/sh".into(),
-        "-lc".into(),
-        "echo landlock-ok".into(),
-    ];
-    container_run_args(context, StdioMode::Batch, "probe-landlock", &runtime_args)
 }
 
 pub fn codex_arg_prefix(selection: SandboxSelection) -> Vec<String> {
     match selection {
         SandboxSelection::Bwrap => vec![
-            "--sandbox".into(),
-            "workspace-write".into(),
-            "--ask-for-approval".into(),
-            "never".into(),
-            "-c".into(),
-            "sandbox_workspace_write.network_access=true".into(),
-            "-c".into(),
-            "default_permissions=\"wcodex_container\"".into(),
-        ],
-        SandboxSelection::Landlock => vec![
-            "-c".into(),
-            "use_legacy_landlock=true".into(),
             "--sandbox".into(),
             "workspace-write".into(),
             "--ask-for-approval".into(),
@@ -137,10 +93,6 @@ pub fn codex_arg_prefix(selection: SandboxSelection) -> Vec<String> {
 
 fn run_bwrap_probe(engine: &ContainerEngine, context: &RunContext) -> Result<bool> {
     Ok(engine.status(bwrap_probe_args(context))?.success())
-}
-
-fn run_landlock_probe(engine: &ContainerEngine, context: &RunContext) -> Result<bool> {
-    Ok(engine.status(landlock_probe_args(context))?.success())
 }
 
 #[cfg(test)]
@@ -170,24 +122,8 @@ mod tests {
             "linux".into(),
             "--".into(),
             "/bin/sh".into(),
-            "-lc".into(),
-            "echo bwrap-ok".into(),
-        ]));
-    }
-
-    #[test]
-    fn landlock_probe_sets_legacy_flag() {
-        let args = os_args_to_strings(&landlock_probe_args(&fake_context()));
-        assert!(args.ends_with(&[
-            "wcodex-runtime:test".into(),
             "-c".into(),
-            "use_legacy_landlock=true".into(),
-            "sandbox".into(),
-            "linux".into(),
-            "--".into(),
-            "/bin/sh".into(),
-            "-lc".into(),
-            "echo landlock-ok".into(),
+            "echo bwrap-ok".into(),
         ]));
     }
 
@@ -214,9 +150,9 @@ mod tests {
 
     #[test]
     fn automatic_yolo_requires_explicit_fallback_flag() {
-        assert!(select_from_probe_results(SandboxMode::Auto, false, false, false).is_err());
+        assert!(select_from_probe_results(SandboxMode::Auto, false, false).is_err());
         assert_eq!(
-            select_from_probe_results(SandboxMode::Auto, false, false, true).unwrap(),
+            select_from_probe_results(SandboxMode::Auto, false, true).unwrap(),
             SandboxSelection::Yolo
         );
     }

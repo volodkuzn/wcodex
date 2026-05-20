@@ -22,6 +22,7 @@ writable_roots = [
 ]
 
 [permissions.wcodex_container.filesystem]
+":minimal" = "read"
 "/workspace" = "write"
 "/cache" = "write"
 "/tmp" = "write"
@@ -31,15 +32,6 @@ glob_scan_max_depth = 4
 
 [permissions.wcodex_container.filesystem.":project_roots"]
 "." = "write"
-"**/.env" = "none"
-"**/*.env" = "none"
-"**/.npmrc" = "none"
-"**/.pypirc" = "none"
-"**/.netrc" = "none"
-"**/id_rsa" = "none"
-"**/id_ed25519" = "none"
-"**/*_rsa" = "none"
-"**/*_ed25519" = "none"
 
 [features.network_proxy]
 enabled = true
@@ -79,7 +71,7 @@ allow_local_binding = true
 "production.cloudflare.docker.com" = "allow"
 
 [shell_environment_policy]
-inherit = "none"
+inherit = "all"
 include_only = [
   "PATH",
   "HOME",
@@ -209,6 +201,15 @@ mod tests {
     }
 
     #[test]
+    fn platform_defaults_are_readable_for_sandbox_helper_reexec() {
+        let doc = codex_config_toml().parse::<DocumentMut>().unwrap();
+        assert_eq!(
+            doc["permissions"]["wcodex_container"]["filesystem"][":minimal"].as_str(),
+            Some("read")
+        );
+    }
+
+    #[test]
     fn network_proxy_is_enabled_without_global_star_allow() {
         let doc = codex_config_toml().parse::<DocumentMut>().unwrap();
         assert_eq!(
@@ -229,6 +230,17 @@ mod tests {
     }
 
     #[test]
+    fn project_root_is_fully_writable() {
+        let doc = codex_config_toml().parse::<DocumentMut>().unwrap();
+        let project_roots = doc["permissions"]["wcodex_container"]["filesystem"][":project_roots"]
+            .as_table()
+            .unwrap();
+
+        assert_eq!(project_roots.get(".").unwrap().as_str(), Some("write"));
+        assert_eq!(project_roots.len(), 1);
+    }
+
+    #[test]
     fn generated_gitconfig_disables_commit_signing_in_container() {
         let tempdir = tempfile::tempdir().unwrap();
         let gitconfig_path = Utf8PathBuf::from_path_buf(tempdir.path().join("gitconfig")).unwrap();
@@ -240,5 +252,22 @@ mod tests {
         let contents = fs_err::read_to_string(&gitconfig_path).unwrap();
 
         assert!(contents.contains("[commit]\n    gpgsign = false\n"));
+    }
+
+    #[test]
+    fn generated_shell_environment_preserves_runtime_path_only_by_allowlist() {
+        let doc = codex_config_toml().parse::<DocumentMut>().unwrap();
+        let policy = &doc["shell_environment_policy"];
+        assert_eq!(policy["inherit"].as_str(), Some("all"));
+        let include_only = policy["include_only"].as_array().unwrap();
+        assert!(include_only
+            .iter()
+            .any(|item| item.as_str() == Some("PATH")));
+        assert!(!include_only
+            .iter()
+            .any(|item| item.as_str() == Some("OPENAI_API_KEY")));
+        assert!(!include_only
+            .iter()
+            .any(|item| item.as_str() == Some("GITHUB_TOKEN")));
     }
 }

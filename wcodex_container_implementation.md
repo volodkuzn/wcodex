@@ -34,7 +34,6 @@ The tool must:
 4. Generate a Codex config that enables no-prompt operation without defaulting to `--yolo`.
 5. Probe Codex’s inner Linux sandbox and use the best available mode:
    - bubblewrap-backed `workspace-write`;
-   - legacy Landlock fallback;
    - `danger-full-access` only with explicit user opt-in.
 6. Pass Codex arguments through so the user can use `wcodex` like `codex`.
 
@@ -119,7 +118,7 @@ Recommended flags:
 --image <tag>                    override generated image tag
 --rebuild-image                  force image rebuild before run
 --allow-yolo-fallback            allow container-only isolation if inner sandbox fails
---sandbox-mode auto|bwrap|landlock|yolo
+--sandbox-mode auto|bwrap|yolo
 --ssh                            forward SSH agent using container --ssh
 --cpus <n>                       default: 4
 --memory <size>                  default: 8g
@@ -321,7 +320,6 @@ RUN apt-get update \
     rsync \
     strace \
     sudo \
-    tini \
     tree \
     unzip \
     xz-utils \
@@ -352,6 +350,7 @@ RUN case "$(uname -m)" in \
  && curl --proto '=https' --tlsv1.2 -fsSL "${codex_url}" -o /tmp/codex.tar.gz \
  && tar -xzf /tmp/codex.tar.gz -C /tmp \
  && install -m 0755 "/tmp/${codex_asset}" /usr/local/bin/codex \
+ && ln -sf /usr/local/bin/codex /usr/local/bin/codex-linux-sandbox \
  && rm -f /tmp/codex.tar.gz "/tmp/${codex_asset}" \
  && codex --version
 
@@ -390,7 +389,7 @@ ENV PATH=/cache/cargo/bin:/cache/uv/bin:/cache/uv/python-bin:/root/.cargo/bin:/u
 
 WORKDIR /workspace
 
-ENTRYPOINT ["tini", "--", "/usr/local/bin/wcodex-entrypoint"]
+ENTRYPOINT ["/usr/local/bin/wcodex-entrypoint"]
 CMD []
 ```
 
@@ -399,6 +398,8 @@ CMD []
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
+
+export PATH=/cache/cargo/bin:/cache/uv/bin:/cache/uv/python-bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 mkdir -p \
   /root/.codex \
@@ -417,17 +418,17 @@ mkdir -p \
 
 case "${1:-}" in
   "")
-    exec codex
+    exec /usr/local/bin/codex
     ;;
   bash|sh|zsh|/bin/bash|/bin/sh|/bin/zsh)
     exec "$@"
     ;;
   codex)
     shift
-    exec codex "$@"
+    exec /usr/local/bin/codex "$@"
     ;;
   *)
-    exec codex "$@"
+    exec /usr/local/bin/codex "$@"
     ;;
 esac
 ```
@@ -437,6 +438,8 @@ esac
 Run as root inside the container by default. Apple `container` bind mounts can appear as `root root` inside the guest, and root avoids repo write failures caused by UID mapping. This is acceptable only because the container VM is the outer boundary and Codex’s inner sandbox is the preferred command boundary.
 
 Keep `/usr/bin/bwrap` setuid with `chmod 4755`. Codex prefers a system `bwrap` on `PATH` and uses bubblewrap as the default Linux filesystem sandbox. The setuid bit improves compatibility in containerized environments where unprivileged user namespaces are restricted.
+
+Do not populate `codex-resources/bwrap` with the distro `bwrap`; Codex treats that path as its own bundled helper and verifies it against an embedded digest. The direct release tarball contains only the Codex binary, so the runtime image should use system `bwrap` and provide `/usr/local/bin/codex-linux-sandbox` as a symlink to `/usr/local/bin/codex` for compatibility. The entrypoint should exec `/usr/local/bin/codex` by absolute path so Codex can pass an absolute current executable path to bubblewrap for the inner re-exec.
 
 ## 8. `container build` implementation
 
@@ -556,17 +559,9 @@ writable_roots = [
 ]
 
 [permissions.wcodex_container.filesystem]
+":minimal" = "read"
 ":project_roots" = {
-  "." = "write",
-  "**/.env" = "none",
-  "**/*.env" = "none",
-  "**/.npmrc" = "none",
-  "**/.pypirc" = "none",
-  "**/.netrc" = "none",
-  "**/id_rsa" = "none",
-  "**/id_ed25519" = "none",
-  "**/*_rsa" = "none",
-  "**/*_ed25519" = "none"
+  "." = "write"
 }
 "/workspace" = "write"
 "/cache" = "write"
@@ -628,7 +623,7 @@ allow_local_binding = true
 "production.cloudflare.docker.com" = "allow"
 
 [shell_environment_policy]
-inherit = "none"
+inherit = "all"
 include_only = [
   "PATH",
   "HOME",
@@ -695,6 +690,10 @@ That mode should add `"*" = "allow"` only for the selected run or generated prof
 
 Do not include `OPENAI_API_KEY`, `GITHUB_TOKEN`, `GH_TOKEN`, `AWS_*`, `GOOGLE_*`, `AZURE_*`, `NPM_TOKEN`, `PYPI_TOKEN`, `UV_PUBLISH_TOKEN`, `UV_INDEX_*_PASSWORD`, or `SSH_AUTH_SOCK`.
 
+The mounted project itself is intentionally fully writable. Project-owned dotfiles
+and nested credentials are part of `/workspace`; keep secrets out of the repo if
+they should not be exposed to sandboxed commands.
+
 If a project needs private dependencies, implement explicit opt-in flags later, for example:
 
 ```text
@@ -741,15 +740,7 @@ Probe 1: normal Linux sandbox:
 
 ```bash
 container run <base-run-flags> wcodex-runtime:<hash> \
-  sandbox linux -- /bin/sh -lc 'echo bwrap-ok'
-```
-
-Probe 2: legacy Landlock fallback:
-
-```bash
-container run <base-run-flags> wcodex-runtime:<hash> \
-  -c use_legacy_landlock=true \
-  sandbox linux -- /bin/sh -lc 'echo landlock-ok'
+  sandbox linux -- /bin/sh -c 'echo bwrap-ok'
 ```
 
 Selection logic:
@@ -757,8 +748,6 @@ Selection logic:
 ```text
 if bwrap probe succeeds:
     use --sandbox workspace-write --ask-for-approval never
-else if landlock probe succeeds:
-    use -c use_legacy_landlock=true --sandbox workspace-write --ask-for-approval never
 else if --allow-yolo-fallback:
     use --sandbox danger-full-access --ask-for-approval never
 else:
@@ -768,16 +757,6 @@ else:
 Final Codex args prefix for normal mode:
 
 ```bash
---sandbox workspace-write \
---ask-for-approval never \
--c sandbox_workspace_write.network_access=true \
--c default_permissions='"wcodex_container"'
-```
-
-Final Codex args prefix for Landlock mode:
-
-```bash
--c use_legacy_landlock=true \
 --sandbox workspace-write \
 --ask-for-approval never \
 -c sandbox_workspace_write.network_access=true \
@@ -936,7 +915,7 @@ image tag
 whether image exists or needs build
 mount paths
 Codex config path
-sandbox probe result: bwrap | landlock | failed
+sandbox probe result: bwrap | failed
 cache write test result
 repo write test result
 network test result
@@ -955,7 +934,7 @@ cargo --version
 rustc --version
 python3 --version
 codex --version
-codex sandbox linux -- /bin/sh -lc 'echo sandbox-ok'
+codex sandbox linux -- /bin/sh -c 'echo sandbox-ok'
 ```
 
 Also test that generated shell commands cannot read Codex auth when sandboxed:
@@ -981,7 +960,6 @@ Fail closed by default:
 Codex inner sandbox failed inside the container.
 Tried:
   1. bubblewrap-backed Linux sandbox
-  2. legacy Landlock fallback
 
 Refusing danger-full-access without --allow-yolo-fallback.
 
