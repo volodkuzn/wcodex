@@ -236,7 +236,8 @@ git rev-parse --show-toplevel
 
 Fallback to current working directory if not inside a Git repo.
 
-Do not build the runtime image from the user repo. Create a temporary build context containing only:
+Do not build the runtime image from the user repo. Copy the standalone
+`runtime/Containerfile` into a temporary build context containing only:
 
 ```text
 Containerfile
@@ -253,9 +254,11 @@ container build \
   <tempdir>
 ```
 
-## 7. Runtime image Dockerfile / Containerfile
+## 7. Runtime image Containerfile
 
-The wrapper should generate this Dockerfile syntax as `Containerfile`.
+The runtime image source lives in the standalone `runtime/Containerfile`. The
+wrapper embeds that file and writes it into the temporary build context as
+`Containerfile`; do not duplicate the Dockerfile body as a Rust string constant.
 
 It includes:
 
@@ -459,13 +462,13 @@ container build \
 
 Use `wcodex-runtime:latest` as the default generated image tag. Keep an
 implementation fingerprint in `~/.wcodex/images/<image-hash>/metadata.json` so
-the wrapper can rebuild when the generated Containerfile or entrypoint changes
+the wrapper can rebuild when `runtime/Containerfile` or the entrypoint changes
 without making the user-facing image tag hash-based.
 
 The `image-hash` fingerprint should include:
 
 ```text
-Containerfile contents
+runtime/Containerfile contents
 entrypoint.sh contents
 CODEX_VERSION
 RUST_TOOLCHAIN

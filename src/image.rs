@@ -9,121 +9,9 @@ pub const CODEX_VERSION: &str = "latest";
 pub const RUST_TOOLCHAIN: &str = "stable";
 pub const IMAGE_REPOSITORY: &str = "wcodex-runtime";
 
-pub const CONTAINERFILE: &str = r#"# syntax=docker/dockerfile:1.7
-
-FROM docker.io/library/debian:bookworm-slim
-
-ARG DEBIAN_FRONTEND=noninteractive
-
-SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
-
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-    bash \
-    bubblewrap \
-    build-essential \
-    ca-certificates \
-    ccache \
-    clang \
-    cmake \
-    curl \
-    dnsutils \
-    fd-find \
-    file \
-    fzf \
-    gdb \
-    git \
-    git-lfs \
-    gnupg \
-    iproute2 \
-    ipset \
-    iptables \
-    iputils-ping \
-    jq \
-    less \
-    lldb \
-    lsof \
-    make \
-    nano \
-    netcat-openbsd \
-    ninja-build \
-    openssh-client \
-    pkg-config \
-    procps \
-    psmisc \
-    python3 \
-    python3-dev \
-    python3-pip \
-    python3-venv \
-    ripgrep \
-    rsync \
-    strace \
-    sudo \
-    tree \
-    unzip \
-    xz-utils \
-    zsh \
- && chmod 4755 /usr/bin/bwrap \
- && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
- && git lfs install --system \
- && apt-get clean \
- && rm -rf /var/lib/apt/lists/* /tmp/*
-
-ARG RUST_TOOLCHAIN=stable
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-      | sh -s -- -y --no-modify-path --profile default --default-toolchain "${RUST_TOOLCHAIN}" \
- && /root/.cargo/bin/rustup component add rustfmt clippy
-
-ARG CODEX_VERSION=latest
-RUN case "$(uname -m)" in \
-      x86_64) codex_asset="codex-x86_64-unknown-linux-musl" ;; \
-      aarch64|arm64) codex_asset="codex-aarch64-unknown-linux-musl" ;; \
-      *) echo "unsupported Codex binary architecture: $(uname -m)" >&2; exit 1 ;; \
-    esac \
- && if [[ "${CODEX_VERSION}" == "latest" ]]; then \
-      codex_url="https://github.com/openai/codex/releases/latest/download/${codex_asset}.tar.gz"; \
-    else \
-      case "${CODEX_VERSION}" in rust-v*) codex_tag="${CODEX_VERSION}" ;; *) codex_tag="rust-v${CODEX_VERSION}" ;; esac; \
-      codex_url="https://github.com/openai/codex/releases/download/${codex_tag}/${codex_asset}.tar.gz"; \
-    fi \
- && curl --proto '=https' --tlsv1.2 -fsSL "${codex_url}" -o /tmp/codex.tar.gz \
- && tar -xzf /tmp/codex.tar.gz -C /tmp \
- && install -m 0755 "/tmp/${codex_asset}" /usr/local/bin/codex \
- && ln -sf /usr/local/bin/codex /usr/local/bin/codex-linux-sandbox \
- && rm -f /tmp/codex.tar.gz "/tmp/${codex_asset}" \
- && codex --version
-
-COPY entrypoint.sh /usr/local/bin/wcodex-entrypoint
-RUN chmod 0755 /usr/local/bin/wcodex-entrypoint
-
-ENV HOME=/root
-ENV CODEX_HOME=/root/.codex
-ENV XDG_CACHE_HOME=/cache/xdg
-ENV UV_CACHE_DIR=/cache/uv/cache
-ENV UV_TOOL_DIR=/cache/uv/tools
-ENV UV_TOOL_BIN_DIR=/cache/uv/bin
-ENV UV_PYTHON_INSTALL_DIR=/cache/uv/python
-ENV UV_PYTHON_BIN_DIR=/cache/uv/python-bin
-ENV UV_LINK_MODE=copy
-ENV UV_NO_MODIFY_PATH=1
-ENV PIP_CACHE_DIR=/cache/pip
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV RUSTUP_HOME=/root/.rustup
-ENV CARGO_HOME=/cache/cargo
-ENV CARGO_INSTALL_ROOT=/cache/cargo
-ENV GOMODCACHE=/cache/go/pkg/mod
-ENV GOCACHE=/cache/go/build
-ENV CCACHE_DIR=/cache/ccache
-ENV PATH=/cache/cargo/bin:/cache/uv/bin:/cache/uv/python-bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-WORKDIR /workspace
-
-ENTRYPOINT ["/usr/local/bin/wcodex-entrypoint"]
-CMD []
-"#;
+pub fn containerfile_contents() -> &'static str {
+    include_str!("../runtime/Containerfile")
+}
 
 pub const ENTRYPOINT_SH: &str = r#"#!/usr/bin/env bash
 set -euo pipefail
@@ -181,7 +69,7 @@ pub struct ImageBuildOptions {
 
 pub fn runtime_image_hash() -> String {
     let mut hasher = Sha256::new();
-    hasher.update(CONTAINERFILE.as_bytes());
+    hasher.update(containerfile_contents().as_bytes());
     hasher.update([0]);
     hasher.update(ENTRYPOINT_SH.as_bytes());
     hasher.update([0]);
@@ -205,7 +93,7 @@ pub fn create_build_context() -> Result<ImageBuildContext> {
     let containerfile = root.join("Containerfile");
     let entrypoint = root.join("entrypoint.sh");
 
-    fs_err::write(&containerfile, CONTAINERFILE)
+    fs_err::write(&containerfile, containerfile_contents())
         .with_context(|| format!("failed to write {containerfile}"))?;
     fs_err::write(&entrypoint, ENTRYPOINT_SH)
         .with_context(|| format!("failed to write {entrypoint}"))?;
@@ -261,7 +149,7 @@ pub fn build_args(
 
 pub fn write_image_state(image_dir: &Utf8Path, tag: &str) -> Result<()> {
     fs_err::create_dir_all(image_dir).with_context(|| format!("failed to create {image_dir}"))?;
-    fs_err::write(image_dir.join("Containerfile"), CONTAINERFILE)
+    fs_err::write(image_dir.join("Containerfile"), containerfile_contents())
         .with_context(|| format!("failed to write {}", image_dir.join("Containerfile")))?;
     fs_err::write(image_dir.join("entrypoint.sh"), ENTRYPOINT_SH)
         .with_context(|| format!("failed to write {}", image_dir.join("entrypoint.sh")))?;
@@ -315,15 +203,17 @@ mod tests {
     }
 
     #[test]
-    fn generated_image_contains_required_tools_and_cache_env() {
-        assert!(CONTAINERFILE.contains("FROM docker.io/library/debian:bookworm-slim"));
-        assert!(CONTAINERFILE.contains("bubblewrap"));
-        assert!(CONTAINERFILE
+    fn runtime_containerfile_contains_required_tools_and_cache_env() {
+        let containerfile = containerfile_contents();
+
+        assert!(containerfile.contains("FROM docker.io/library/debian:bookworm-slim"));
+        assert!(containerfile.contains("bubblewrap"));
+        assert!(containerfile
             .contains("ln -sf /usr/local/bin/codex /usr/local/bin/codex-linux-sandbox"));
-        assert!(!CONTAINERFILE.contains("codex-resources/bwrap"));
-        assert!(CONTAINERFILE.contains("COPY entrypoint.sh /usr/local/bin/wcodex-entrypoint"));
-        assert!(CONTAINERFILE.contains("ENTRYPOINT [\"/usr/local/bin/wcodex-entrypoint\"]"));
-        assert!(CONTAINERFILE.contains(&format!(
+        assert!(!containerfile.contains("codex-resources/bwrap"));
+        assert!(containerfile.contains("COPY entrypoint.sh /usr/local/bin/wcodex-entrypoint"));
+        assert!(containerfile.contains("ENTRYPOINT [\"/usr/local/bin/wcodex-entrypoint\"]"));
+        assert!(containerfile.contains(&format!(
             "ENV PATH={}",
             crate::engine_container::RUNTIME_PATH
         )));
@@ -332,27 +222,35 @@ mod tests {
             crate::engine_container::RUNTIME_PATH
         )));
         assert!(ENTRYPOINT_SH.contains("exec /usr/local/bin/codex \"$@\""));
-        assert!(CONTAINERFILE.contains("ARG RUST_TOOLCHAIN=stable\nRUN curl"));
-        assert!(CONTAINERFILE.contains("ARG CODEX_VERSION=latest\nRUN case"));
-        assert!(CONTAINERFILE.contains(
+        assert!(containerfile.contains("ARG RUST_TOOLCHAIN=stable\nRUN curl"));
+        assert!(containerfile.contains("ARG CODEX_VERSION=latest\nRUN case"));
+        assert!(containerfile.contains(
             "https://github.com/openai/codex/releases/latest/download/${codex_asset}.tar.gz"
         ));
-        assert!(CONTAINERFILE.contains(
+        assert!(containerfile.contains(
             "https://github.com/openai/codex/releases/download/${codex_tag}/${codex_asset}.tar.gz"
         ));
-        assert!(CONTAINERFILE.contains("codex_tag=\"rust-v${CODEX_VERSION}\""));
+        assert!(containerfile.contains("codex_tag=\"rust-v${CODEX_VERSION}\""));
         assert!(
-            CONTAINERFILE.contains("install -m 0755 \"/tmp/${codex_asset}\" /usr/local/bin/codex")
+            containerfile.contains("install -m 0755 \"/tmp/${codex_asset}\" /usr/local/bin/codex")
         );
-        assert!(!CONTAINERFILE.contains("node:"));
-        assert!(!CONTAINERFILE.contains("nodejs"));
-        assert!(!CONTAINERFILE.contains("npm install -g"));
-        assert!(!CONTAINERFILE.contains("@openai/codex"));
-        assert!(!CONTAINERFILE.contains("npm_config_cache"));
-        assert!(!CONTAINERFILE.contains("/cache/npm"));
-        assert!(CONTAINERFILE.contains("ENV UV_CACHE_DIR=/cache/uv/cache"));
-        assert!(CONTAINERFILE.contains("ENV CARGO_HOME=/cache/cargo"));
-        assert!(CONTAINERFILE.contains("chmod 4755 /usr/bin/bwrap"));
+        assert!(!containerfile.contains("node:"));
+        assert!(!containerfile.contains("nodejs"));
+        assert!(!containerfile.contains("npm install -g"));
+        assert!(!containerfile.contains("@openai/codex"));
+        assert!(!containerfile.contains("npm_config_cache"));
+        assert!(!containerfile.contains("/cache/npm"));
+        assert!(containerfile.contains("ENV UV_CACHE_DIR=/cache/uv/cache"));
+        assert!(containerfile.contains("ENV CARGO_HOME=/cache/cargo"));
+        assert!(containerfile.contains("chmod 4755 /usr/bin/bwrap"));
+    }
+
+    #[test]
+    fn build_context_uses_standalone_containerfile() {
+        let context = create_build_context().unwrap();
+        let written = fs_err::read_to_string(&context.containerfile).unwrap();
+
+        assert_eq!(written, containerfile_contents());
     }
 
     #[test]

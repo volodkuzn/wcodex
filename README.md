@@ -96,7 +96,7 @@ wcodex build-image --pull
 
 The default runtime image tag is `wcodex-runtime:latest`. The wrapper still
 records a local implementation fingerprint under `~/.wcodex/images/` so changes
-to the generated Containerfile trigger a rebuild without putting a hash in the
+to `runtime/Containerfile` trigger a rebuild without putting a hash in the
 image tag.
 
 To refresh the direct Codex binary download when using the default
